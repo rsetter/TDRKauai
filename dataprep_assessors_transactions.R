@@ -2,6 +2,7 @@ library(data.table)
 library(foreign)
 library(sf)
 library(dplyr)
+library(tidyr)
 library(ggplot2)
 library(scales)
 
@@ -20,8 +21,8 @@ options(scipen = 999)
 
 
 # open lot-based setback dataset
-setbackshp <- st_read(setback_folder,layer=setbackdepth_layer)
-setbacklot <- as.data.frame(setbackshp)
+setbackdepthshp <- st_read(setback_folder,layer=setbackdepth_layer)
+setbacklot <- as.data.frame(setbackdepthshp)
 
 #important columns
 # TMK 
@@ -38,19 +39,279 @@ setbacklot <- setbacklot %>% distinct(PARID, .keep_all = TRUE)
 
 
 
+#open rate-based setback dataset
+setbackrateshp <- st_read(setback_folder,layer=setbackrate_layer)
+
+
+#create cumulative setback shapefile
+setbackdepthshp <- st_make_valid(setbackdepthshp)
+setbackrateshp <- st_make_valid(setbackrateshp)
+setbackshp <- st_union(setbackdepthshp, setbackrateshp)
+
+
+
+
+#open ce dataset
+slrceshp <- st_read(slrce_folder)
+
+
+
+
+#open building footprints dataset 2025
+bldgftprntshp <- st_read(bldgftprnt_folder,fid_column_name = "bldgid")
+#calculate building footprint cover by setback / CE
+setback_shps <- list(setback = st_transform(setbackshp, st_crs(bldgftprntshp)), 
+                      setback_depth = st_transform(setbackdepthshp, st_crs(bldgftprntshp)),
+                      setback_rate = st_transform(setbackrateshp, st_crs(bldgftprntshp)),
+                      slrce = st_transform(slrceshp, st_crs(bldgftprntshp)))
+bldg_setback_cover <- lapply(names(setback_shps), function(name) {
+  overlaps <- st_intersects(bldgftprntshp, setback_shps[[name]]) #filter out only buildings within any setback designation
+  has_overlap <- lengths(overlaps) > 0
+  if(sum(has_overlap) == 0) return(NULL)
+  st_intersection(bldgftprntshp[has_overlap, ], setback_shps[[name]]) %>%
+    mutate(overlap_sqft = as.numeric(st_area(.))) %>%
+    st_drop_geometry() %>%
+    group_by(bldgid) %>%
+    summarise(!!paste0(name, "_sqft") := sum(overlap_sqft))
+})
+for (result in bldg_setback_cover) {
+  bldgftprntshp <- left_join(bldgftprntshp, result, by = "bldgid")
+}
+bldgftprntshp <- bldgftprntshp %>%
+  mutate(across(ends_with("_sqft"), ~replace_na(., 0)))
+bldgftprntshp$BLDG_SQFT <- as.numeric(st_area(bldgftprntshp)) * 10.7639
+bldgftprntshp <- bldgftprntshp %>%
+  mutate(across(c(setback_sqft, setback_depth_sqft, setback_rate_sqft, slrce_sqft), 
+                ~ . * 10.7639))
+
+
+
+
+#open parcel + assessors dataset 2025
+parcelshp <- st_read(kauaiparcel_folder,layer=kauaiparcel_layer)
+#calculate parcel cover by setback / CE
+parcelshp$PARCEL_SQFT <- as.numeric(st_area(parcelshp)) * 10.7639
+setback_shps <- list(setback = st_transform(setbackshp, st_crs(parcelshp)),
+  setback_depth = st_transform(setbackdepthshp, st_crs(parcelshp)),
+  setback_rate = st_transform(setbackrateshp, st_crs(parcelshp)),
+  slrce = st_transform(slrceshp, st_crs(parcelshp)))
+parcel_setback_cover <- lapply(names(setback_shps), function(name) {
+  overlaps <- st_intersects(parcelshp, setback_shps[[name]])
+  has_overlap <- lengths(overlaps) > 0
+  if(sum(has_overlap) == 0) return(NULL)
+  st_intersection(parcelshp[has_overlap, ], setback_shps[[name]]) %>%
+    mutate(overlap_sqft = as.numeric(st_area(.)) * 10.7639) %>%  # Convert to sqft
+    st_drop_geometry() %>%
+    group_by(PARID) %>%
+    summarise(!!paste0(name, "_sqft") := sum(overlap_sqft))
+})
+for (result in parcel_setback_cover) {
+  if(!is.null(result)) {
+    parcelshp <- left_join(parcelshp, result, by = "PARID")
+  }
+}
+parcelshp <- parcelshp %>%
+  mutate(across(ends_with("_sqft") & !PARCEL_SQFT, ~replace_na(., 0)))
+
+
+
+
+
+#join building footprint data with parcels 
+# assign each building to parcel with most overlap
+bldgftprntshp <- st_transform(bldgftprntshp, st_crs(parcelshp))
+#bldgftprntshp <- st_join(bldgftprntshp, parcelshp[c("PARID","COTMK","TMK")], largest = TRUE) # no need this with the new 2025 building dataset
+# column indicating >50% cover by setback
+bldgftprntshp <- bldgftprntshp %>%
+  mutate(
+    setback_over50 = (setback_sqft / BLDG_SQFT) > 0.5,
+    setback_depth_over50 = (setback_depth_sqft / BLDG_SQFT) > 0.5,
+    setback_rate_over50 = (setback_rate_sqft / BLDG_SQFT) > 0.5,
+    slrce_over50 = (slrce_sqft / BLDG_SQFT) > 0.5
+  )
+# building summary by parcel
+parcel_summary <- bldgftprntshp %>%
+  st_drop_geometry() %>%
+  group_by(PARID) %>% 
+  summarise(
+    n_buildings = n(),
+    n_setback_over50 = sum(setback_over50, na.rm = TRUE),
+    n_setback_depth_over50 = sum(setback_depth_over50, na.rm = TRUE),
+    n_setback_rate_over50 = sum(setback_rate_over50, na.rm = TRUE),
+    n_slrces_over50 = sum(slrce_over50, na.rm = TRUE),
+    largest_bldg_sqft = max(BLDG_SQFT, na.rm = TRUE),
+    largest_setback_sqft = setback_sqft[which.max(BLDG_SQFT)],
+    largest_setback_depth_sqft = setback_depth_sqft[which.max(BLDG_SQFT)],
+    largest_setback_rate_sqft = setback_rate_sqft[which.max(BLDG_SQFT)],
+    largest_slrces_sqft = slrce_sqft[which.max(BLDG_SQFT)]
+  ) %>%
+  mutate(
+    TMK = as.numeric(paste0("4", substr(PARID, 1, 8)))
+  )
+# add building summary to parcels shapefile
+parcelshp <- parcelshp %>%
+  left_join(parcel_summary %>% select(-TMK), by = "PARID")
+#add data to cpr's too
+#if gisacres == 0.00180303 (it's a CPR) then use the same values as the TMK8
+parcel_summary_cpr <- parcelshp %>%
+  st_drop_geometry() %>%
+  filter(GISACRES == 0.00180303) %>%
+  select(PARID, TMK) %>%
+  left_join(parcel_summary %>% select(-PARID), by = "TMK") %>%
+  select(PARID, n_buildings:largest_slrces_sqft)
+parcelshp <- parcelshp %>%
+  left_join(parcel_summary_cpr, by = "PARID", suffix = c("", "_tmk")) %>%
+  mutate(
+    n_buildings = coalesce(n_buildings_tmk, n_buildings),
+    n_setback_over50 = coalesce(n_setback_over50_tmk, n_setback_over50),
+    n_setback_depth_over50 = coalesce(n_setback_depth_over50_tmk, n_setback_depth_over50),
+    n_setback_rate_over50 = coalesce(n_setback_rate_over50_tmk, n_setback_rate_over50),
+    n_slrces_over50 = coalesce(n_slrces_over50_tmk, n_slrces_over50),
+    largest_bldg_sqft = coalesce(largest_bldg_sqft_tmk, largest_bldg_sqft),
+    largest_setback_sqft = coalesce(largest_setback_sqft_tmk, largest_setback_sqft),
+    largest_setback_depth_sqft = coalesce(largest_setback_depth_sqft_tmk, largest_setback_depth_sqft),
+    largest_setback_rate_sqft = coalesce(largest_setback_rate_sqft_tmk, largest_setback_rate_sqft),
+    largest_slrces_sqft = coalesce(largest_slrces_sqft_tmk, largest_slrces_sqft)
+  ) %>%
+  select(-ends_with("_tmk"))
+
+
+
+# all parcels in depth-based and/or rate-based setback 
+parcelshp <- parcelshp %>%
+  left_join(setbacklot, by = "PARID")
+
+#parcels within setback: n_setback_over50 >= 1 OR n_buildings==0 & LD_SETBK_F > 0
+assessors_setback <- parcelshp %>% 
+  filter(n_setback_over50 >= 1 | 
+           (n_buildings == 0 & LD_SETBK_F > 0) | 
+           (is.na(n_buildings) & LD_SETBK_F > 0))
+setback_parid <- unique(assessors_setback$PARID)
+setback_tmk <- unique(assessors_setback$COTMK)
+assessors_setback <- assessors_setback[!duplicated(assessors_setback$PARID), ]
+
+
+
+#calculate buildable area
+
+#average width
+# assessors_setback <- assessors_setback %>%
+#   left_join(setbacklot, by = "PARID")
+assessors_setback$AVE_WID_FT <- assessors_setback$PARCEL_SQFT / assessors_setback$AVE_DEP_FT
+#buildable depth: AVE_DEP_FT - LD_SETBK_F - 10' 
+assessors_setback$buildable_depth <- pmax(0, assessors_setback$AVE_DEP_FT - assessors_setback$LD_SETBK_F - 10)
+#buildable width: AVE_WID_FT-2*5
+#buildable area: buildable_depth * buildable_width
+assessors_setback$buildable_area <- assessors_setback$buildable_depth * pmax(0,assessors_setback$AVE_WID_FT-2*5)
+#building area lost: largest_bldg_sqft - buildable_area
+assessors_setback$bldg_area_lost <- assessors_setback$largest_bldg_sqft - assessors_setback$buildable_area
+#building area % lost: (largest_bldg_sqft - buildable_area)/largest_bldg_sqft
+assessors_setback$bldg_area_lost_pct <- (assessors_setback$largest_bldg_sqft - assessors_setback$buildable_area)/assessors_setback$largest_bldg_sqft
+
+
+
+#parcels within rate-based setback
+assessors_rate <- assessors_setback %>% 
+  filter(n_setback_rate_over50 >= 1 | 
+           (n_buildings == 0 & setback_rate_sqft > 0) | 
+           (is.na(n_buildings) & setback_rate_sqft > 0))
+rate_parid <- unique(assessors_rate$PARID)
+rate_tmk <- unique(assessors_rate$COTMK)
+
+
+# parcels within lot depth-based setback
+assessors_depth <- assessors_setback %>% 
+  filter(n_setback_depth_over50 >= 1 | 
+           (n_buildings == 0 & setback_depth_sqft > 0) | 
+           (is.na(n_buildings) & setback_depth_sqft > 0))
+depth_parid <- unique(assessors_depth$PARID)
+depth_tmk <- unique(assessors_depth$COTMK)
+
+
+
+
+
+
+
+# all parcels in CE
+assessors_ce <- parcelshp %>% 
+  filter(n_slrces_over50 > 0 |
+           (n_buildings == 0 & slrce_sqft > 0) |
+           (is.na(n_buildings) & slrce_sqft > 0))
+CE_parid <- unique(assessors_ce$PARID)
+CE_tmk <- unique(assessors_ce$COTMK)
+
+
+
+
+# non coastal / inland parcels (not in setback or CE)
+assessors_inland <- parcelshp %>%
+  filter(!COTMK %in% union(CE_tmk, setback_tmk))
+inland_tmk <- unique(assessors_inland$COTMK)
+inland_parid<- unique(assessors_inland$PARID)
+
+
+#all ag parcels 
+assessors_ag <- parcelshp %>%
+  filter(TAXCLASS25 == "Agricultural")
+ag_tmk <- unique(assessors_ag$COTMK)
+ag_parid<- unique(assessors_ag$PARID)
+
+IALag_shp <- st_read(IALag_folder)
+IALag_shp <- st_transform(IALag_shp, st_crs(assessors_ag))
+assessors_ag$IAL <- as.integer(lengths(st_intersects(assessors_ag, IALag_shp)) > 0)
+
+
+
+#ag CPR's
+assessors_agCPR <- assessors_ag %>%
+  filter(!is.na(CPR_UNIT))
+agCPR_tmk <- unique(assessors_agCPR$COTMK)
+agCPR_parid<- unique(assessors_agCPR$PARID)
+
+
+
+
+
+
+
+
+# all parcels on kauai
+
+# total value of parcels 
+sum(parcelshp$MKTTOT25)
+# total number of parcels 
+length(unique(parcelshp$COTMK,na.rm=T))
+#total unique tmk12's
+length(unique(parcelshp$PARID,na.rm=T))
+# total number of CPR's 
+parcelshp %>%
+  group_by(COTMK) %>%
+  mutate(cpr = n() > 5) %>%
+  ungroup() %>%
+  filter(cpr == TRUE) %>%
+  nrow() 
+# total number of parcels CPR'd 
+parcelshp %>%
+  group_by(COTMK) %>%
+  summarise(parid_count = n(), .groups='drop') %>%
+  filter(parid_count > 5) %>%
+  nrow()
+
+
 
 
 
 
 #open kauai assessors data 2025
-#pre-processed to include SLRXA data
+#pre-processed to include SLRXA data (by Kammie)
 
 # Import Assessor's data and Assign data frame.  make sure TMK column cell is not in scientific notation
 assessorsshp <- st_read(assessors_file)
 assessors_ceshp <- st_read(noncprshpfolder,layer=noncprshplayer) 
 assessorsshpcpr <- st_read(cprshpfolder,layer=cprshplayer)
 assessorscpr <- as.data.frame(assessorsshpcpr)
-assessors_ce <- as.data.frame(assessors_ceshp)
+assessors_hazard <- as.data.frame(assessors_ceshp)
 assessors <- as.data.frame(assessorsshp)
 
 #column definitions:
@@ -70,27 +331,27 @@ assessors <- as.data.frame(assessorsshp)
 
 #join the dataframes. in ArcGIS, use the building-TMK-join method1 "centroid within" for non-CPR, method2 "intersect" for CPR units. 
 #if there are < 4 CPR for a COTMK, these are false CPR and should treat them as non-CPR
-common_cols <- intersect(names(assessorscpr), names(assessors_ce)) # Keep only common columns in both datasets
+common_cols <- intersect(names(assessorscpr), names(assessors_hazard)) # Keep only common columns in both datasets
 assessorscpr <- assessorscpr[, common_cols]
-assessors_ce <- assessors_ce[, common_cols]
+assessors_hazard <- assessors_hazard[, common_cols]
 assessorscpr <- assessorscpr[!is.na(assessorscpr$CPR_UNIT),] #remove nonCPR from CPR df
 falseCPR <- assessorscpr %>% #find the false CPRs that are basically really just split parcels and not apartments
   group_by(COTMK) %>%
   filter(n_distinct(PARID) < 4) %>%
   pull(PARID) %>%
   unique()
-assessors_falseCPR <- assessors_ce %>% #create a df to store the false CPR
+assessors_falseCPR <- assessors_hazard %>% #create a df to store the false CPR
   filter(PARID %in% falseCPR) 
 assessors_falseCPR <- assessors_falseCPR %>% mutate(CPR_UNIT = NA)
 assessorscpr <- assessorscpr %>% # remove false CPRs from CPR df 
   filter(!PARID %in% falseCPR)
-assessors_ce <- assessors_ce[is.na(assessors_ce$CPR_UNIT) & !assessors_ce$PARID %in% falseCPR & 
-                               !assessors_ce$PARID %in% assessorscpr,] #remove CPR and falseCPR from nonCPR df
-assessors_ce <- rbind(assessors_ce,assessors_falseCPR) #join nonCPR and falseCPR df together
+assessors_hazard <- assessors_hazard[is.na(assessors_hazard$CPR_UNIT) & !assessors_hazard$PARID %in% falseCPR & 
+                               !assessors_hazard$PARID %in% assessorscpr,] #remove CPR and falseCPR from nonCPR df
+assessors_hazard <- rbind(assessors_hazard,assessors_falseCPR) #join nonCPR and falseCPR df together
 
 
 # if there are >1 buildings on a single non-CPR'd parcel, keep only the row with the most makai building that is >300sqft
-assessors_ce <- assessors_ce %>%
+assessors_hazard <- assessors_hazard %>%
   group_by(PARID) %>%
   mutate(buildings = n()) %>%
   filter(
@@ -105,23 +366,23 @@ assessors_ce <- assessors_ce %>%
   slice(1) %>%  # keep only the first row if there are ties
   ungroup()
 
-# add excluded CPR's back into assessorscpr / assessors_ce
+# add excluded CPR's back into assessorscpr / assessors_hazard
 cpr_tmk <- unique(assessorscpr$COTMK)
 missing_parcels <- assessors %>%
   filter(COTMK %in% cpr_tmk) %>%  # Only COTMKs that exist in assessorscpr
   filter(!PARID %in% assessorscpr$PARID)  # Only PARIDs not already in assessorscpr
 assessorscpr <- bind_rows(assessorscpr, missing_parcels)
 
-ncpr_tmk <- unique(assessors_ce$COTMK)
+ncpr_tmk <- unique(assessors_hazard$COTMK)
 missing_parcels <- assessors %>%
-  filter(COTMK %in% ncpr_tmk) %>%  # Only COTMKs that exist in assessors_ce
-  filter(!PARID %in% assessors_ce$PARID)  # Only PARIDs not already in assessors_ce
+  filter(COTMK %in% ncpr_tmk) %>%  # Only COTMKs that exist in assessors_hazard
+  filter(!PARID %in% assessors_hazard$PARID)  # Only PARIDs not already in assessors_hazard
 missing_parcels <- missing_parcels %>% select(-geometry)
-assessors_ce <- bind_rows(assessors_ce, missing_parcels)
-assessors_ce$CPR_units_total <- 0 
+assessors_hazard <- bind_rows(assessors_hazard, missing_parcels)
+assessors_hazard$CPR_units_total <- 0 
 
 #join with setback data
-assessors_ce <- left_join(assessors_ce, setbacklot, by = c("PARID"))
+assessors_hazard <- left_join(assessors_hazard, setbacklot, by = c("PARID"))
 assessorscpr <- left_join(assessorscpr, setbacklot, by = c("PARID"))
 
 # add summary columns to COTMK groups
@@ -180,11 +441,7 @@ assessorscpr <- assessorscpr %>%
   # Remove the temporary column
   select(-most_common_fid)
 
-keep_cols <- c("PARID","COTMK","CPR_UNIT","TAXCLASS25",
-               "ahupuaa","moku","NewB",
-               "MKTBLDG25","ASSDBLDG25","MKTLAND25","ASSDLAND25",
-               "MKTTOT25","ASSDTOT25","TOTEXEMPT_","NETTAXAB_3",
-               "TARGET_FID","GIS_SQFT","NEAR_VEG",
+keep_cols <- c("PARID","NEAR_VEG",
                "NEAR_CE05","NEAR_CE11","NEAR_CE20","NEAR_CE32",
                "NEAR_PF05","NEAR_PF11","NEAR_PF20","NEAR_PF32",
                "NEAR_WF05","NEAR_WF11","NEAR_WF20","NEAR_WF32",
@@ -193,152 +450,30 @@ keep_cols <- c("PARID","COTMK","CPR_UNIT","TAXCLASS25",
                'SA_WF05','SA_WF11','SA_WF20','SA_WF32',
                'SA_XA05','SA_XA11','SA_XA20','SA_XA32',
                'SA_PF05','SA_PF11','SA_PF20','SA_PF32',
-               'CPR_units_total','buildings',"LD_SETBK_F","AVE_DEP_FT")
-assessors_ce <- assessors_ce[, keep_cols]
+               'CPR_units_total')
+assessors_hazard <- assessors_hazard[, keep_cols]
 assessorscpr <- assessorscpr[, keep_cols]
 
 #join all dataframes together - falseCPR, nonCPR, and CPR
-assessors_ce <- assessors_ce[!assessors_ce$PARID %in% assessorscpr$PARID, ] #remove duplicates before joining
-assessors_ce <- rbind(assessors_ce,assessorscpr) 
-
-# rename columns
-assessors_ce <- assessors_ce %>%
-  rename(BuildingID = TARGET_FID,BLDG_SQFT = GIS_SQFT,PARCEL_SQFT = area_og)
-
-assessors_ce <- assessors_ce[assessors_ce$PARID>0,]
-
-#as an extra precaution, make sure there are no duplicates of TMK's that happen to have buildings equally far from veg
-assessors_ce = assessors_ce[!duplicated(assessors_ce$PARID),] 
-
-# only those within CE
-assessors_ce <- assessors_ce[assessors_ce$SA_CE32 > 0 | assessors_ce$NEAR_CE32 == 0| 
-                               is.na(assessors_ce$SA_CE32) | is.na(assessors_ce$NEAR_CE32),]
-
-CE_tmk <- unique(assessors_ce$COTMK)
-CE_parid <- unique(assessors_ce$PARID)
+assessors_hazard <- assessors_hazard[!assessors_hazard$PARID %in% assessorscpr$PARID, ] #remove duplicates before joining
+assessors_hazard <- rbind(assessors_hazard,assessorscpr) 
 
 
-
-
-
-
-
-#parcels within rate-based setback
-setbackrateshp <- st_read(setback_folder,layer=setbackrate_layer)
-parcelshp <- st_read(kauaiparcel_folder,layer=kauaiparcel_layer)
-setbackrateshp <- st_transform(setbackrateshp, st_crs(parcelshp))
-parcelshp <- st_make_valid(parcelshp)
-setbackrateshp <- st_make_valid(setbackrateshp)
-# Calculate parcel areas
-parcelshp$parcel_area <- st_area(parcelshp)
-# calculate rate-based coverage on parcels
-ratebased_cover <- st_intersection(parcelshp, setbackrateshp)
-ratebased_cover <- ratebased_cover %>%
-  mutate(ratebased_cover = st_area(geometry)) %>% 
-  st_drop_geometry() %>%
-  group_by(PARID) %>%
-  summarise(ratebased_cover = sum(ratebased_cover))
-parcelshp <- parcelshp %>%
-  left_join(ratebased_cover, by = "PARID") %>%
+assessors_hazard <- assessors_hazard %>%
   mutate(
-    ratebased_cover = ifelse(is.na(ratebased_cover), units::set_units(0, "m^2"), ratebased_cover),
-    pct_ratesetback = as.numeric(ratebased_cover / parcel_area) * 100
+    pct_ce05 = SA_CE05 / area_og,
+    pct_ce11 = SA_CE11 / area_og,
+    pct_ce20 = SA_CE20 / area_og,
+    pct_ce32 = SA_CE32 / area_og,  
+    pct_wf05 = SA_WF05 / area_og,
+    pct_wf11 = SA_WF11 / area_og,
+    pct_wf20 = SA_WF20 / area_og,
+    pct_wf32 = SA_WF32 / area_og,
   )
-assessors_rate <- parcelshp[parcelshp$pct_ratesetback > 0,]
-rate_parid <- unique(assessors_rate$PARID)
 
 
 
 
-# parcels within lot depth-based setback
-assessors <- left_join(assessors, setbacklot, by = c("PARID"))
-assessors <- assessors[!duplicated(assessors$PARID), ]
-depth_tmk <- unique(assessors$COTMK[!is.na(assessors$AVE_DEP_FT)])
-assessors_depth <- assessors[assessors$COTMK %in% depth_tmk, ]
-depth_parid <- unique(assessors_depth$PARID)
-
-
-
-
-
-
-
-
-# all parcels in depth-based and/or rate-based setback 
-assessors_setback <- assessors %>% 
-  filter(COTMK %in% union(CE_tmk,depth_tmk))
-setback_parid <- unique(assessors_setback$PARID)
-
-
-
-
-
-
-
-
-
-
-#open slrxa data
-slrxashp <- st_read(slrxa_folder, layer=slrxa_layer)
-slrxashp <- st_transform(slrxashp, st_crs(assessorsshp))
-sf_use_s2(FALSE) #speed up calculations - use planar geometry rather than spherical
-assessors_slrxa_shp <- st_intersection(assessorsshp, slrxashp) %>%  
-  mutate(slrxa_area = as.numeric(st_area(.)))
-
-assessors_slrxa <- as.data.frame(assessors_slrxa_shp)
-assessors_slrxa <- assessors_slrxa[!duplicated(assessors_slrxa$PARID), ]
-
-slrxa_tmk <- unique(assessors_slrxa$COTMK)
-slrxa_parid <- unique(assessors_slrxa$PARID)
-
-#add missing CPR units 
-missing_parcels <- assessors %>%
-  filter(COTMK %in% slrxa_tmk) %>%  # Only COTMKs that exist in assessors_slrxa
-  filter(!PARID %in% assessors_slrxa$PARID)  # Only PARIDs not already in assessors_slrxa
-assessors_slrxa <- bind_rows(assessors_slrxa, missing_parcels)
-
-
-
-
-
-
-
-
-
-# non coastal parcels
-assessors_inland <- assessors[!assessors$COTMK %in% slrxa_tmk & 
-                                  !assessors$COTMK %in% union(CE_tmk, depth_tmk), ]
-inland_tmk <- unique(assessors_inland$COTMK)
-inland_parid<- unique(assessors_inland$PARID)
-
-
-
-
-
-
-
-
-# all parcels on kauai
-
-# total value of parcels 
-sum(assessors$MKTTOT25)
-# total number of parcels 
-length(unique(assessors$COTMK,na.rm=T))
-#total unique tmk12's
-length(unique(assessors$PARID,na.rm=T))
-# total number of CPR's 
-assessors %>%
-  group_by(COTMK) %>%
-  mutate(cpr = n() > 5) %>%
-  ungroup() %>%
-  filter(cpr == TRUE) %>%
-  nrow() 
-# total number of parcels CPR'd in 
-assessors %>%
-  group_by(COTMK) %>%
-  summarise(parid_count = n(), .groups='drop') %>%
-  filter(parid_count > 5) %>%
-  nrow()
 
 
 
@@ -365,7 +500,7 @@ blackknight <- blackknight[!is.na(blackknight$`BKI Distinct Property ID (DPID)`)
 ## Load Assessment 
 assmt <- fread(BKassessment_file)
 #colnames(assmt)
-assmt <- assmt[,c(1:3, 9, 19:21, 72:74, 78, 80, 151, 248)]
+assmt <- assmt[,c(1:3, 9, 19:21, 72:74, 78, 80,85, 151, 248)]
 assmt$`BKI Distinct Property ID (DPID)` <- as.character(assmt$`BKI Distinct Property ID (DPID)`)
 assmt <- assmt %>% distinct(`BKI Distinct Property ID (DPID)`, `Assessor’s Parcel Number (APN, PIN)`, .keep_all = TRUE)
 assmt <- assmt %>% select(-c("FIPS Code (State/County)", "Property Zip Code", "BKFS Internal PID"))
@@ -389,7 +524,7 @@ names(bk) <- c("fips_code", "property_address", "property_zip", "recording_date"
   "concurrent_td_lender_name", "concurrent_td_lender_type", "concurrent_td_loan_amount", "concurrent_td_loan_type", "concurrent_td_financing_type",
   "concurrent_td_interest_rate", "concurrent_td_due_date", "concurrent_2nd_td_loan_amount", "cash_purchase", "latitude",
   "longitude", "census_tract", "county_land_use_desc", "county_land_use_code", "zoning",
-  "bldg_area", "year_built","lot_size_sqft")
+  "bldg_area", "year_built","n_bedrooms", "lot_size_sqft")
 
 #create TMK column remove dashes in APN
 bk$TMK <- gsub("-", "", bk$apn)
@@ -407,13 +542,64 @@ bk_kauai$PARID <- as.numeric(ifelse(
 ))
 
 
+
+
+
+
+
+
+
+#inflate sales prices to $2025
+present_year <- 2025
+# Create SFH price index from Kauai median home prices https://data.uhero.hawaii.edu/#/search?start=1994-01-01&id=11&data_list_id=29&view=table&geo=KAU&freq=A
+sfh_price_index <- data.frame(
+  year = 1994:2024,
+  price_index = c(
+    246.2, 264.6, 220.6, 231.7, 233.1, 236.8, 259, 286.5, 335, 367.6, 
+    499.5, 632.3, 694.8, 654.1, 607.4, 489.1, 493.6, 474.1, 475.9, 520.9, 
+    547.2, 631.3, 628.5, 656.2, 708.8, 668.8, 792.3, 1133.80, 1214.10, 
+    1200.80, 1343.90
+  ) * 1000  
+)
+
+# Estimate 2025 SFH price index (using 2024 value)
+sfh_index_2025 <- 1343.90 * 1000
+sfh_price_index <- rbind(sfh_price_index, 
+  data.frame(year = 2025, price_index = sfh_index_2025)
+)
+
+# Adjusted Price = Nominal Price × (CPI_2025 / CPI_sale_year)
+adjust_to_2025 <- function(sale_year) {
+  if(is.na(sale_year)) return(NA)
+  # Get SFH price index for the sale year
+  sfh_index_sale <- sfh_price_index$price_index[sfh_price_index$year == sale_year]
+  if(length(sfh_index_sale) == 0) return(NA)
+  # Deflator = SFH_Index_targetyr / SFH_Index_sale
+  deflator <- sfh_index_2025 / sfh_index_sale
+  return(deflator)
+}
+
+
+bk_kauai <- bk_kauai %>%
+  mutate(
+    date_sale = as.Date(as.character(contract_date), format = "%Y%m%d"),
+    year_sale = as.numeric(format(date_sale, "%Y")),
+    deflator = sapply(year_sale, adjust_to_2025),
+    sales_price_2025 = sales_price * deflator
+  )
+
+
+
+
+
 #join with assessors
-bk_assessors <- merge(bk_kauai, assessors, by = "PARID", all.x = TRUE)
+bk_assessors <- merge(bk_kauai, parcelshp, by = "PARID", all.x = TRUE)
 
 bk_CE <- bk_assessors[bk_assessors$PARID %in% CE_parid, ]
+bk_rate <- bk_assessors[bk_assessors$PARID %in% rate_parid, ]
 bk_depth <- bk_assessors[bk_assessors$PARID %in% depth_parid, ]
 bk_setback <- bk_assessors[bk_assessors$PARID %in% setback_parid, ]
-bk_slrxa <- bk_assessors[bk_assessors$PARID %in% slrxa_parid, ]
+#bk_slrxa <- bk_assessors[bk_assessors$PARID %in% slrxa_parid, ]
 bk_inland <- bk_assessors[bk_assessors$PARID %in% inland_parid, ]
 
 
@@ -421,11 +607,13 @@ bk_inland <- bk_assessors[bk_assessors$PARID %in% inland_parid, ]
 
 
 
-
-
-
-
-
-
-
+write.csv(st_drop_geometry(assessors_ce), "assessors_ce.csv", row.names = FALSE)
+write.csv(st_drop_geometry(assessors_rate), "assessors_rate.csv", row.names = FALSE)
+write.csv(st_drop_geometry(assessors_depth), "assessors_depth.csv", row.names = FALSE)
+write.csv(st_drop_geometry(assessors_setback), "assessors_setback.csv", row.names = FALSE)
+write.csv(st_drop_geometry(assessors_inland), "assessors_inland.csv", row.names = FALSE)
+write.csv(st_drop_geometry(assessors_ag), "assessors_ag.csv", row.names = FALSE)
+write.csv(st_drop_geometry(bk_assessors), "bk_assessors.csv", row.names = FALSE)
+write.csv(st_drop_geometry(bldgftprntshp), "bldgftprntshp.csv", row.names = FALSE)
+write.csv(st_drop_geometry(parcelshp), "parcelshp.csv", row.names = FALSE)
 

@@ -18,12 +18,12 @@ options(scipen = 999)
 # identify parcels in setback
 
 #open pre-processed files
-write.csv(assessors_ce,"assessors_ce.csv")
-rate_parid <- unique(assessors_rate$PARID)
-depth_parid <- unique(assessors_depth$PARID)
-setback_parid <- unique(assessors_setback$PARID)
-slrxa_parid <- unique(assessors_slrxa$PARID)
-inland_parid <- unique(assessors_inland$PARID)
+assessors_ce <- read.csv("assessors_ce.csv")
+assessors_rate<-read.csv("assessors_rate.csv")
+assessors_depth<-read.csv("assessors_depth.csv")
+assessors_setback<-read.csv("assessors_setback.csv")
+assessors_slrxa<-read.csv("assessors_slrxa.csv")
+assessors_inland<-read.csv("assessors_inland.csv")
 
 
 
@@ -43,7 +43,6 @@ assessors_ce %>%
   filter(cpr == TRUE) %>%
   nrow()  
 # total number of parcels CPR'd in CE
-length(unique(assessorscpr$COTMK,na.rm=T))
 assessors_ce %>%
   group_by(COTMK) %>%
   summarise(parid_count = n(), .groups='drop') %>%
@@ -51,7 +50,27 @@ assessors_ce %>%
   nrow()
 
 
+#parcels in rate setback
+assessors_rate
 
+# total value of parcels in rate-based setback
+sum(assessors_rate$MKTTOT25)
+# total number of parcels in rate-based setback
+length(unique(assessors_rate$COTMK,na.rm=T))
+# total number of CPR's in rate-based setback
+length(unique(assessors_rate$PARID,na.rm=T))
+assessors_rate %>%
+  group_by(COTMK) %>%
+  mutate(cpr = n() > 5) %>%
+  ungroup() %>%
+  filter(cpr == TRUE) %>%
+  nrow() 
+# total number of parcels CPR'd in rate-based setback
+assessors_rate %>%
+  group_by(COTMK) %>%
+  summarise(parid_count = n(), .groups='drop') %>%
+  filter(parid_count > 5) %>%
+  nrow()
 
 
 #parcels in depth setback
@@ -102,23 +121,26 @@ assessors_setback %>%
 
 
 
-#parcels in slrxa
-assessors_slrxa
 
-# total value of parcels in slrxa
-sum(assessors_slrxa$MKTTOT25)
-# total number of parcels in slrxa
-length(unique(assessors_slrxa$COTMK,na.rm=T))
-# total number of CPR's in slrxa
-length(unique(assessors_slrxa$PARID,na.rm=T))
-assessors_slrxa %>%
+#parcels in depth+rate setback - residential
+residential <- c("Owner-Occupied", "Vacation Rental","Non-Owner-Occupied Residential","Owner-Occupied Mixed Use")  
+assessors_setback_res <- assessors_setback %>%
+  filter(TAXCLASS25 %in% residential)
+
+# total value of parcels in setback
+sum(assessors_setback_res$MKTTOT25)
+# total number of parcels in setback
+length(unique(assessors_setback_res$COTMK,na.rm=T))
+# total number of CPR's in setback
+length(unique(assessors_setback_res$PARID,na.rm=T))
+assessors_setback_res %>%
   group_by(COTMK) %>%
   mutate(cpr = n() > 5) %>%
   ungroup() %>%
   filter(cpr == TRUE) %>%
   nrow() 
-# total number of parcels CPR'd in slrxa
-assessors_slrxa %>%
+# total number of parcels CPR'd in setback
+assessors_setback_res %>%
   group_by(COTMK) %>%
   summarise(parid_count = n(), .groups='drop') %>%
   filter(parid_count > 5) %>%
@@ -126,29 +148,49 @@ assessors_slrxa %>%
 
 
 
+#parcels ag
 
-#parcels non-coastal
-assessors_inland
-
-# total value of parcels inland
-sum(assessors_inland$MKTTOT25)
-# total number of parcels inland
-length(unique(assessors_inland$COTMK,na.rm=T))
-# total number of CPR's inland
-length(unique(assessors_inland$PARID,na.rm=T))
-assessors_inland %>%
+# total value of parcels in setback
+sum(assessors_ag$MKTTOT25)
+# total number of parcels in setback
+length(unique(assessors_ag$COTMK,na.rm=T))
+# total number of CPR's in setback
+length(unique(assessors_ag$PARID,na.rm=T))
+assessors_ag %>%
   group_by(COTMK) %>%
   mutate(cpr = n() > 5) %>%
   ungroup() %>%
   filter(cpr == TRUE) %>%
   nrow() 
-# total number of parcels CPR'd inland
-assessors_inland %>%
+# total number of parcels CPR'd in setback
+assessors_ag %>%
   group_by(COTMK) %>%
   summarise(parid_count = n(), .groups='drop') %>%
   filter(parid_count > 5) %>%
   nrow()
 
+
+
+#ag CPR
+
+# total value of parcels in setback
+sum(assessors_agCPR$MKTTOT25)
+# total number of parcels in setback
+length(unique(assessors_agCPR$COTMK,na.rm=T))
+# total number of CPR's in setback
+length(unique(assessors_agCPR$PARID,na.rm=T))
+assessors_agCPR %>%
+  group_by(COTMK) %>%
+  mutate(cpr = n() > 5) %>%
+  ungroup() %>%
+  filter(cpr == TRUE) %>%
+  nrow() 
+# total number of parcels CPR'd in setback
+assessors_agCPR %>%
+  group_by(COTMK) %>%
+  summarise(parid_count = n(), .groups='drop') %>%
+  filter(parid_count > 5) %>%
+  nrow()
 
 
 
@@ -159,28 +201,57 @@ CE_parid <- unique(assessors_ce$PARID)
 rate_parid <- unique(assessors_rate$PARID)
 depth_parid <- unique(assessors_depth$PARID)
 setback_parid <- unique(assessors_setback$PARID)
-slrxa_parid <- unique(assessors_slrxa$PARID)
-inland_parid <- unique(assessors_inland$PARID)
+setback_parid_res <- unique(assessors_setback_res$PARID)
+#slrxa_parid <- unique(assessors_slrxa$PARID)
+#inland_parid <- unique(assessors_inland$PARID)
+ag_parid <- unique(assessors_ag$PARID[assessors_ag$IAL == 0]) #not IAL
+agCPR_parid <- unique(assessors_agCPR$PARID[assessors_agCPR$IAL == 0])
 
 
 bk_CE <- bk_assessors[bk_assessors$PARID %in% CE_parid, ]
 bk_rate <- bk_assessors[bk_assessors$PARID %in% rate_parid, ]
 bk_depth <- bk_assessors[bk_assessors$PARID %in% depth_parid, ]
 bk_setback <- bk_assessors[bk_assessors$PARID %in% setback_parid, ]
-bk_slrxa <- bk_assessors[bk_assessors$PARID %in% slrxa_parid, ]
-bk_inland <- bk_assessors[bk_assessors$PARID %in% inland_parid, ]
+bk_setback_res <- bk_assessors[bk_assessors$PARID %in% setback_parid_res, ]
+#bk_slrxa <- bk_assessors[bk_assessors$PARID %in% slrxa_parid, ]
+#bk_inland <- bk_assessors[bk_assessors$PARID %in% inland_parid, ]
+bk_ag <- bk_assessors[bk_assessors$PARID %in% ag_parid, ]
+bk_agCPR <- bk_assessors[bk_assessors$PARID %in% agCPR_parid, ]
 
 
 #number of sales
 nrow(bk_CE)
+nrow(bk_rate)
 nrow(bk_depth)
 nrow(bk_setback)
-nrow(bk_slrxa)
-nrow(bk_inland)
+nrow(bk_setback_res)
+#nrow(bk_slrxa)
+#nrow(bk_inland)
+nrow(bk_ag)
+nrow(bk_agCPR)
 
 #number of unique parcels sold
 length(unique(bk_CE$PARID))
+length(unique(bk_rate$PARID))
 length(unique(bk_depth$PARID))
 length(unique(bk_setback$PARID))
-length(unique(bk_slrxa$PARID))
-length(unique(bk_inland$PARID))
+length(unique(bk_setback_res$PARID))
+#length(unique(bk_slrxa$PARID))
+#length(unique(bk_inland$PARID))
+length(unique(bk_ag$PARID))
+length(unique(bk_agCPR$PARID))
+
+
+
+
+
+bk_setback_res <- bk_setback_res %>%
+  left_join(
+    assessors_setback_res %>% 
+      st_drop_geometry() %>%  
+      select(PARID, buildable_area, buildable_depth, bldg_area_lost_pct,PARCEL_SQFT),
+    by = "PARID"
+  )
+
+
+
