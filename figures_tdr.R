@@ -186,20 +186,19 @@ ggplot(tdr_split_allocation_1 $transactions, aes(x = total_credit_cost/1e6, y = 
   scale_x_continuous(labels = dollar_format(suffix = "M")) +
   scale_y_continuous(labels = percent_format()) +
   labs(
-    title = "Average Pricing",
     subtitle = paste(tdr_split_allocation_1 $summary$credits_allocated, "credits allocated"),
     x = "Total Credit Cost",
     y = "Marginal ROI Gain"
   ) +
   theme_classic()
-tdr_split_credits_per_parcel_avg <- results_avg$transactions %>%
+tdr_split_credits_per_parcel_avg <- tdr_split_allocation_1$transactions %>%
   group_by(receiving_TMK) %>%
   summarise(n_credits = n(), total_paid = sum(total_credit_cost))
 ggplot(tdr_split_credits_per_parcel_avg, aes(x = reorder(receiving_TMK, -n_credits), y = n_credits)) +
   geom_col(aes(fill = total_paid/1e6)) +
   scale_fill_viridis_c(name = "Total Paid\n($M)", option = "plasma") +
-  labs(title = "Average Pricing", x = "Receiving Parcel", y = "Credits") +
-  theme_minimal() +
+  labs(x = "Receiving Parcel", y = "Credits") +
+  theme_classic() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 
 ggplot(tdr_split_allocation_realprice $transactions, aes(x = total_credit_cost/1e6, y = marginal_roi_gain)) +
@@ -215,14 +214,14 @@ ggplot(tdr_split_allocation_realprice $transactions, aes(x = total_credit_cost/1
     y = "Marginal ROI Gain"
   ) +
   theme_classic()
-tdr_split_credits_per_parcel_real <- results_real$transactions %>%
+tdr_split_credits_per_parcel_real <- tdr_split_allocation_realprice$transactions %>%
   group_by(receiving_TMK) %>%
   summarise(n_credits = n(), total_paid = sum(total_credit_cost))
 ggplot(tdr_split_credits_per_parcel_real, aes(x = reorder(receiving_TMK, -n_credits), y = n_credits)) +
   geom_col(aes(fill = total_paid/1e6)) +
   scale_fill_viridis_c(name = "Total Paid\n($M)", option = "plasma") +
   labs(title = "Real Prices", x = "Receiving Parcel", y = "Credits") +
-  theme_minimal() +
+  theme_classic() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 
 #tdr roi comparison - CPR development
@@ -353,65 +352,6 @@ ggplot(tdr_breakeven_construction_split %>% filter(!is.na(breakeven_construction
     y = "Count") +
   theme_classic() +
   theme(plot.title = element_text(face = "bold"))
-ggplot(tdr_split_allocation_1$transactions, aes(x = total_credit_cost/1e6, y = marginal_roi_gain)) +
-  geom_point(aes(color = transaction_number), size = 3, alpha = 0.7) +
-  geom_smooth(method = "loess", se = TRUE, color = "black", linetype = "dashed") +
-  scale_color_viridis_c(name = "Transaction\nOrder") +
-  scale_x_continuous(labels = dollar_format(suffix = "M")) +
-  scale_y_continuous(labels = percent_format()) +
-  labs(x = "Total Credit Cost (Average Price)",
-    y = "Marginal ROI Gain for Receiving Parcel"
-  ) +
-  theme_classic()
-tdr_split_credits_per_parcel_avg <- tdr_split_allocation_1$transactions %>%
-  group_by(receiving_TMK) %>%
-  summarise(
-    n_credits = n(),
-    total_paid = sum(total_credit_cost)
-  ) %>%
-  arrange(desc(n_credits))
-ggplot(tdr_split_credits_per_parcel_avg, aes(x = reorder(receiving_TMK, -n_credits), 
-                                             y = n_credits)) +
-  geom_col(aes(fill = total_paid/1e6)) +
-  scale_fill_viridis_c(name = "Total Paid\n($M)", option = "plasma", labels = comma) +
-  labs(subtitle = paste(nrow(tdr_split_credits_per_parcel_avg), 
-                     "parcels received", sum(tdr_split_credits_per_parcel_avg$n_credits), "credits"),
-    x = "Receiving Parcel TMK",
-    y = "Number of Credits Received"
-  ) +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
-
-
-# tdr breakeven construction cost - split with real credit prices
-ggplot(tdr_split_allocation_realprice$transactions, aes(x = total_credit_cost/1e6, y = marginal_roi_gain)) +
-  geom_point(aes(color = transaction_number), size = 3, alpha = 0.7) +
-  geom_smooth(method = "loess", se = TRUE, color = "black", linetype = "dashed") +
-  scale_color_viridis_c(name = "Transaction\nOrder") +
-  scale_x_continuous(labels = dollar_format(suffix = "M")) +
-  scale_y_continuous(labels = percent_format()) +
-  labs(x = "Total Credit Cost",
-    y = "Marginal ROI Gain for Receiving Parcel"
-  ) +
-  theme_classic()
-tdr_split_credits_per_parcel <- tdr_split_allocation_realprice$transactions %>%
-  group_by(receiving_TMK) %>%
-  summarise(
-    n_credits = n(),  # Count transactions
-    total_paid = sum(total_credit_cost)
-  ) %>%
-  arrange(desc(n_credits))
-ggplot(tdr_split_credits_per_parcel, aes(x = reorder(receiving_TMK, -n_credits), 
-                               y = n_credits)) +
-  geom_col(aes(fill = total_paid/1e6)) +
-  scale_fill_viridis_c(name = "Total Paid\n($M)", option = "plasma", labels = comma) +
-  labs(subtitle = paste(nrow(tdr_split_credits_per_parcel), 
-                        "parcels received", sum(tdr_split_credits_per_parcel$n_credits), "credits"),
-    x = "Receiving Parcel TMK",
-    y = "Number of Credits Received"
-  ) +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 
 
 
