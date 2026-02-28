@@ -5,8 +5,16 @@ library(stargazer)
 
 #final report figures
 
-
-
+#export sending area for mapping
+parcelshp <- st_read(kauaiparcel_folder,layer=kauaiparcel_layer)
+parcel_parid <- parcelshp %>%
+  select(PARID)%>%
+  mutate(PARID = as.character(PARID))
+assessors_setback_res_noncpr_nobuild_nogov_shp <- assessors_setback_res_noncpr_nobuild_nogov %>%
+  mutate(PARID = as.character(PARID)) %>%
+  left_join(parcel_parid, by = "PARID") %>%
+  st_as_sf()
+st_write(assessors_setback_res_noncpr_nobuild_nogov_shp, "assessors_setback_res_noncpr_nobuild_nogov.gpkg", delete_dsn = TRUE)
 
 # sending area
 
@@ -49,6 +57,11 @@ ggplot(bk_assessors_setback_res_noncpr_nobuild_nogov %>% filter(sales_price_2025
   ) +
   theme_classic() +
   theme(plot.title = element_text(face = "bold"))
+
+
+
+
+
 
 
 
@@ -214,6 +227,21 @@ ggplot(tdr_split_allocation_realprice $transactions, aes(x = total_credit_cost/1
     y = "Marginal ROI Gain"
   ) +
   theme_classic()
+#tdr roi comparison - dynamic split
+ggplot(tdr_split_allocation_realprice$transactions,
+       aes(x = current_roi, y = next_roi)) +
+  geom_point(alpha = 0.3, size = 1.5, color = "black") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed", linewidth = 1) +
+  geom_hline(yintercept = 0, color = "gray30", linetype = "dotted") +
+  geom_vline(xintercept = 0, color = "gray30", linetype = "dotted") +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(labels = label_percent()) +
+  labs(
+    x = "Baseline ROI",
+    y = "TDR ROI",
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"))
 tdr_split_credits_per_parcel_real <- tdr_split_allocation_realprice$transactions %>%
   group_by(receiving_TMK) %>%
   summarise(n_credits = n(), total_paid = sum(total_credit_cost))
@@ -298,16 +326,16 @@ ggplot(tdr_breakeven_ratio_single,aes(x = breakeven_density_ratio)) +
 
 
 #tdr breakeven ratio - split
-# ggplot(tdr_breakeven_ratio_split %>% filter(!is.na(breakeven_n_credits)),
-#        aes(x = breakeven_n_credits)) +
-#   geom_histogram(fill = "grey", alpha = 0.7, bins = 30, color = "white") +
-#   geom_vline(xintercept = 1, color = "red", linewidth = 1, linetype = "dashed") +
-#   scale_y_continuous(labels = label_comma()) +
-#   labs(
-#     x = "Breakeven TDR ratio",
-#     y = "Count") +
-#   theme_classic() +
-#   theme(plot.title = element_text(face = "bold"))
+ggplot(tdr_breakeven_split %>% filter(!is.na(density_ratio)),
+       aes(x = density_ratio)) +
+  geom_histogram(fill = "grey", alpha = 0.7, bins = 30, color = "white") +
+  geom_vline(xintercept = 1, color = "red", linewidth = 1, linetype = "dashed") +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    x = "Breakeven TDR ratio",
+    y = "Count") +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold"))
 
 
 #tdr breakeven ratio - cpr

@@ -906,18 +906,10 @@ calculate_cpr_tdr_roi <- function(cpr_row, tdr_credits) {
   tdr_total_cost = cpr_row$baseline_purchase_cost + tdr_construction + tdr_credit_cost
   
   # Calculate TDR revenue with distributed dwellings
-  tdr_revenue <- {
-    baseline_total_per_type <- d_nparcels * d_dwellings
-    shares <- baseline_total_per_type / sum(baseline_total_per_type)
-    extra <- round(shares * tdr_credits)
-    tdr_total_per_type <- baseline_total_per_type + extra
-    tdr_dwellings_per_parcel <- tdr_total_per_type / d_nparcels
-    tdr_acres_per_dwelling <- d_acres / tdr_dwellings_per_parcel
-    
-    sum(mapply(function(a, d, n) {
-      n * d * predict_ag_acredwel_calib(a, ag_bldg_sqft)
-    }, tdr_acres_per_dwelling, tdr_dwellings_per_parcel, d_nparcels))
-  }
+  tdr_revenue <- predict_ag_acredwel_calib(
+    cpr_row$total_acres / tdr_dwellings,
+    ag_bldg_sqft
+  ) * tdr_dwellings
   
   tdr_profit = tdr_revenue - tdr_total_cost
   tdr_roi = tdr_profit / tdr_total_cost
@@ -2043,7 +2035,16 @@ tdr_breakeven_split <- calculate_split_breakeven_price(tdr_allparcels_split, n_c
 
 tdr_breakeven_split_roi0 <- calculate_split_breakeven_price_roi0(tdr_allparcels_split, n_credits = c(1)) #, 2, 5, 10, 20))
 
+# Get sending parcel cost stats
+tdr_breakeven_split_sending_costs <- assessors_setback_res_noncpr_nobuild_nogov %>%
+  mutate(total_credit_cost = MKTTOT25_calibrated + demo_cost)
 
+# Add ratio column
+tdr_breakeven_split <- tdr_breakeven_split %>%
+  mutate(
+    #what multiple of current credits would be needed to break even?
+    density_ratio = breakeven_price / (incremental_revenue / n_credits)
+  )
 
 
 
